@@ -13,7 +13,7 @@ DATA_DIR = os.environ.get("DATA_DIR", "data")
 MUSIC_DIR = os.path.join(DATA_DIR, "music")
 os.makedirs(MUSIC_DIR, exist_ok=True)
 DB = os.path.join(DATA_DIR, "panel.db")
-ADMIN_USER = "NOVIX"  # fixed on purpose (env vars ignored) - change later
+ADMIN_USER = "ROHIT"  # fixed on purpose (env vars ignored) - change later
 ADMIN_PASS = "909090"
 TZ_OFFSET = int(os.environ.get("TZ_OFFSET_MIN", "330")) * 60  # default IST
 MAX_MUSIC = 20
@@ -23,7 +23,8 @@ TG_ADMIN_ID = "6739795427"      # default admin Chat ID (not secret). Admin > Te
 EMOJI_PACKS = [x for x in (os.environ.get("EMOJI_PACKS") or "RGCHEAT99,botd3,NewsEmoji").replace(" ", "").split(",") if x]   # premium emoji packs (first = highest priority)
 BRAND = "OFFICIAL SELLER"      # name shown on login + panel header
 CURRENCY = "₹"         # symbol shown before money amounts (all prices are INR)
-DEFAULT_API_BASE = "https://official-seller-4.onrender.com"   # main API server (editable in Admin > Main API)
+DEFAULT_API_BASE = "https://adminshops.com/api/v1"   # TAHIR API SYSTEM server (fixed - only the token is entered in Admin)
+USD_TO_INR = 30.0                                     # provider price in USD x 30 = our cost in Rs
 DEFAULT_MARKUP_RESELLER = 50    # % added on the main-API cost -> RESELLER price
 DEFAULT_MARKUP_USER = 200       # % added on the main-API cost -> USER price
 
@@ -253,80 +254,112 @@ def same(a, b):
     return secrets.compare_digest(str(a).encode("utf-8"), str(b).encode("utf-8"))
 
 
-# ---- main API (the other panel: X-API-Key header, /api/v1/connect | balance | products | purchase)
+# ---- TAHIR API SYSTEM (adminshops.com: Authorization Bearer, GET /balance | /catalog, POST /generate)
 class ProvUnknown(Exception):
     """purchase request was sent but the answer never came back -> outcome unknown, never refund blindly"""
 
 
 def prov_base():
-    return (get_setting("api_base") or DEFAULT_API_BASE).rstrip("/")
+    return DEFAULT_API_BASE.rstrip("/")
+
+
+def prov_token():
+    return (get_setting("tahir_token") or "").strip()
 
 
 def prov_headers():
-    tok = get_setting("api_token")
+    tok = prov_token()
     if not tok:
-        raise ValueError("API token not set (Admin > Main API)")
-    return {"X-API-Key": tok.strip()}
+        raise ValueError("API token not set (Admin > Tahir API System)")
+    return {"Authorization": "Bearer " + tok}
 
 
 def prov_json(r):
     try:
         j = r.json()
     except ValueError:
-        raise ValueError("Main API HTTP %s (not JSON)" % r.status_code)
+        raise ValueError("Tahir API HTTP %s (not JSON)" % r.status_code)
     if not isinstance(j, dict):
-        raise ValueError("Main API HTTP %s (unexpected answer)" % r.status_code)
+        raise ValueError("Tahir API HTTP %s (unexpected answer)" % r.status_code)
     return j
+
+
+def prov_err(j, r):
+    e = j.get("error")
+    if isinstance(e, dict):
+        e = e.get("message")
+    return str(e or j.get("message") or "Tahir API HTTP %s" % r.status_code)[:150]
 
 
 def prov_get(path, **params):
     r = requests.get(prov_base() + path, headers=prov_headers(), params=params, timeout=30)
-    return prov_json(r)
-
-
-def prov_generate(plan_id):
-    """Buy ONE key from the main API (POST /api/v1/purchase). Never retried: the API has no idempotency key."""
-    try:
-        r = requests.post(prov_base() + "/api/v1/purchase", headers=prov_headers(),
-                          json={"plan_id": int(plan_id)}, timeout=90)
-    except (requests.ConnectTimeout, requests.ConnectionError):
-        raise ValueError("Main API not reachable")
-    except requests.Timeout:
-        raise ProvUnknown("The main API took too long to answer")
     j = prov_json(r)
-    if not j.get("success") or not j.get("key"):
-        raise ValueError(str(j.get("error") or j.get("message") or "Main API HTTP %s" % r.status_code)[:150])
-    return str(j["key"])
+    if not j.get("ok"):
+        raise ValueError(prov_err(j, r))
+    return j.get("data") or {}
+
+
+def prov_generate(plan_id, idem):
+    """Buy ONE key (POST /generate). The same idempotency_key is sent on a retry, so it can never charge twice."""
+    last = None
+    for attempt in range(2):
+        try:
+            r = requests.post(prov_base() + "/generate", headers=prov_headers(),
+                              json={"product_id": int(plan_id), "quantity": 1, "idempotency_key": idem}, timeout=60)
+        except requests.ConnectTimeout:
+            raise ValueError("Tahir API not reachable")
+        except requests.ConnectionError:
+            raise ValueError("Tahir API not reachable")
+        except requests.Timeout:
+            last = ProvUnknown("The Tahir API took too long to answer")
+            continue
+        j = prov_json(r)
+        keys = (j.get("data") or {}).get("keys") if j.get("ok") else None
+        if not keys:
+            raise ValueError(prov_err(j, r))
+        return str(keys[0])
+    raise last
 
 
 def prov_status():
-    """Connect test (GET /api/v1/connect) -> remembered in settings."""
+    """Connect test = GET /balance -> remembered in settings."""
     try:
-        j = prov_get("/api/v1/connect")
-        if j.get("connected"):
-            st = dict(ok=True, balance=float(j.get("balance") or 0), username=str(j.get("username") or ""),
-                      msg=str(j.get("message") or "Connect successful"))
-        else:
-            st = dict(ok=False, msg=str(j.get("message") or j.get("error") or "Not connected")[:150])
+        d = prov_get("/balance")
+        st = dict(ok=True, balance=float(d.get("balance") or 0), balance_usd=float(d.get("balance_usd") or 0),
+                  currency=str(d.get("currency") or "INR"), msg="Connect successful")
     except Exception as e:
         st = dict(ok=False, msg=str(e)[:150])
     st["ts"] = int(time.time())
-    set_setting("api_status", json.dumps(st))
+    set_setting("tahir_status", json.dumps(st))
     return st
 
 
 def load_catalog(refresh=False):
-    """All products of the main API (GET /api/v1/products). Cached in settings."""
+    """All products of the Tahir API (GET /catalog), grouped by product name. Cost = USD price x 30. Cached in settings."""
     if not refresh:
         try:
-            return json.loads(get_setting("catalog_cache"))
+            return json.loads(get_setting("tahir_catalog"))
         except ValueError:
             pass
-    j = prov_get("/api/v1/products")
-    if not j.get("success", True) and "products" not in j:
-        raise ValueError(str(j.get("message") or j.get("error") or "Could not load products")[:150])
-    obj = dict(ts=int(time.time()), products=j.get("products") or [])
-    set_setting("catalog_cache", json.dumps(obj))
+    d = prov_get("/catalog")
+    rate = float(d.get("usd_rate") or 0)
+    groups, order = {}, []
+    for it in d.get("products") or []:
+        try:
+            pid = int(it["product_id"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        usd = it.get("price_usd")
+        if usd is None and rate:
+            usd = float(it.get("price") or 0) / rate
+        cost = round(float(usd or 0) * USD_TO_INR, 2)
+        gname = str(it.get("product_name") or "Product %s" % pid).strip()
+        if gname not in groups:
+            groups[gname] = dict(product_id=len(order) + 1, name=gname, plans=[])
+            order.append(gname)
+        groups[gname]["plans"].append(dict(plan_id=pid, name=str(it.get("duration") or "").strip(), price=cost, available=True))
+    obj = dict(ts=int(time.time()), products=[groups[n] for n in order])
+    set_setting("tahir_catalog", json.dumps(obj))
     return obj
 
 
@@ -378,7 +411,7 @@ def catalog(rid):
     for p in q("SELECT * FROM products ORDER BY id"):
         plans = []
         for pl in q("SELECT * FROM plans WHERE product_id=? ORDER BY (CASE WHEN hours>0 THEN hours*3600 ELSE days*86400 END), id", (p["id"],)):
-            if pl["mode"] == "provider" and pl["prov_src"] != "v2":      # linked to the REMOVED old API -> never sold
+            if pl["mode"] == "provider" and pl["prov_src"] != "tahir":      # linked to the REMOVED old API -> never sold
                 continue
             price, custom = (user_price_of(pl), False) if user else price_for(rid, pl)
             sc = q("SELECT COUNT(*) FROM stock WHERE plan_id=? AND used=0", (pl["id"],), one=True)[0]
@@ -445,8 +478,8 @@ def buy(rid, plan_id, via="panel"):
             raise ValueError("Insufficient balance")
         now = int(time.time())
         mode, key = (pl["mode"] or "random"), None
-        if mode == "provider" and (not pl["prov_pid"] or pl["prov_src"] != "v2"):
-            raise ValueError("Plan is not linked to the main API (admin must import it again)")
+        if mode == "provider" and (not pl["prov_pid"] or pl["prov_src"] != "tahir"):
+            raise ValueError("Plan is not linked to the Tahir API (admin must import it again)")
         if mode == "stock":
             row = c.execute("SELECT * FROM stock WHERE plan_id=? AND used=0 ORDER BY id LIMIT 1", (plan_id,)).fetchone()
             if not row:
@@ -473,7 +506,7 @@ def buy(rid, plan_id, via="panel"):
     if mode in ("api", "provider"):  # balance already reserved; refund if the provider fails
         try:
             if mode == "provider":
-                key = prov_generate(pl["prov_pid"])
+                key = prov_generate(pl["prov_pid"], "rs-%s-%s-%s-%s" % (rid, plan_id, now, secrets.token_hex(4)))
             else:
                 key = fetch_external(pl)
         except ProvUnknown as e:      # request may have gone through -> do NOT refund automatically
@@ -2101,8 +2134,8 @@ def admin_products():
             plid = int(request.form["plan_id"])
             old = q("SELECT days,hours,name,prov_pid,prov_src FROM plans WHERE id=?", (plid,), one=True)
             mode = request.form.get("mode", "stock")
-            if old and mode == "provider" and (not old["prov_pid"] or old["prov_src"] != "v2"):
-                flash("This plan is not linked to the main API (import it again from Main API > All Products)", "err")
+            if old and mode == "provider" and (not old["prov_pid"] or old["prov_src"] != "tahir"):
+                flash("This plan is not linked to the Tahir API (import it again from Tahir API System > All Products)", "err")
             elif old:
                 same = old["days"] == days and (old["hours"] or 0) == hours
                 name = old["name"] if same else plan_label(days, hours)
@@ -2779,30 +2812,22 @@ def admin_music():
 def admin_main_api():
     if request.method == "POST":
         if request.form.get("action") == "save":
-            base = request.form.get("base", "").strip().rstrip("/")
-            base = re.sub(r"/api/v1$", "", base)
             tok = request.form.get("token", "").strip()
-            if not re.match(r"^https?://", base):
-                flash("Server URL must start with http:// or https://", "err")
-                return redirect("/admin/main-api")
-            if base != get_setting("api_base"):
-                set_setting("catalog_cache", "")          # other server -> old product list is useless
-            set_setting("api_base", base)
-            if tok:
-                set_setting("api_token", tok)
+            if tok and tok != prov_token():
+                set_setting("tahir_token", tok)
+                set_setting("tahir_catalog", "")          # other account -> old product list is useless
         st = prov_status()
         if st["ok"]:
-            flash("Connect successful - %s, balance %s" % (st.get("username") or "account", _cur(st["balance"])), "ok")
+            flash("Connect successful - balance %s (USD %s)" % (_cur(st["balance"]), "%g" % st.get("balance_usd", 0)), "ok")
         else:
             flash("Not connected: %s" % st["msg"], "err")
         return redirect("/admin/main-api")
     try:
-        st = json.loads(get_setting("api_status"))
+        st = json.loads(get_setting("tahir_status"))
     except ValueError:
         st = None
-    tok = get_setting("api_token")
-    return render_template("admin_mapi.html", base=get_setting("api_base") or DEFAULT_API_BASE,
-                           tail=tok[-4:] if tok else "", st=st, page="mapi")
+    tok = prov_token()
+    return render_template("admin_mapi.html", tail=tok[-4:] if tok else "", st=st, page="mapi")
 
 
 @app.route("/admin/main-api/products", methods=["GET", "POST"])
@@ -2826,7 +2851,7 @@ def admin_main_api_products():
             return round(cost * (1 + mr / 100.0), 2), round(cost * (1 + mu / 100.0), 2)
         if scope == "sync":                      # re-price every plan already imported, using fresh costs
             n = 0
-            for pl in q("SELECT id, prov_pid FROM plans WHERE prov_src='v2'"):
+            for pl in q("SELECT id, prov_pid FROM plans WHERE prov_src='tahir'"):
                 hit = rows.get(pl["prov_pid"])
                 if hit:
                     cost = float(hit[1].get("price") or 0)
@@ -2848,7 +2873,7 @@ def admin_main_api_products():
             p, pl = rows[pid]
             cost = float(pl.get("price") or 0)
             rp, up = prices(cost)
-            ex = q("SELECT id FROM plans WHERE prov_pid=? AND prov_src='v2'", (pid,), one=True)
+            ex = q("SELECT id FROM plans WHERE prov_pid=? AND prov_src='tahir'", (pid,), one=True)
             if ex:
                 if overwrite:
                     q("UPDATE plans SET cost=?, price=?, user_price=? WHERE id=?", (cost, rp, up, ex["id"]), commit=True)
@@ -2871,7 +2896,7 @@ def admin_main_api_products():
                 days = max(-(-hours // 24), 1)
             name = (pl.get("name") or "").strip() or plan_label(days, hours)
             q("INSERT INTO plans(product_id,name,days,hours,price,user_price,cost,mode,prov_pid,prov_src) VALUES(?,?,?,?,?,?,?,?,?,?)",
-              (prid, name, max(days, 1), hours, rp, up, cost, "provider", pid, "v2"), commit=True)
+              (prid, name, max(days, 1), hours, rp, up, cost, "provider", pid, "tahir"), commit=True)
             new_pl += 1
         flash("Added %d plan(s) (%d new product(s)). Prices updated: %d. Already there (skipped): %d."
               % (new_pl, new_pr, upd, skip), "ok")
@@ -2882,12 +2907,12 @@ def admin_main_api_products():
     except Exception as e:
         err = str(e)
         try:
-            cat = json.loads(get_setting("catalog_cache"))
+            cat = json.loads(get_setting("tahir_catalog"))
         except ValueError:
             cat = None
     if err:
         flash("Could not load products: %s" % err, "err")
-    mine = {r["prov_pid"]: r for r in q("SELECT prov_pid, price, user_price FROM plans WHERE prov_src='v2'")}
+    mine = {r["prov_pid"]: r for r in q("SELECT prov_pid, price, user_price FROM plans WHERE prov_src='tahir'")}
     groups = []
     for p in (cat or {}).get("products", []):
         plans = []

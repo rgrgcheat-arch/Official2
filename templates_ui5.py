@@ -84,3 +84,30 @@ sub("admin_backup.html", "<div class=card><h3>Download Backup</h3>", """<div cla
 <form method=post action=\"/admin/backup/auto\" style=\"margin-top:8px\"><input type=hidden name=action value=now><button class=btn>{{ic('download')}} Backup now &amp; send to Telegram</button></form>
 {% if ab_files %}<p class=mu style=\"margin-top:12px\">Saved on server:</p>{% for f in ab_files %}<div><a href=\"/admin/backup/file/{{f}}\">{{f}}</a></div>{% endfor %}{% endif %}</div>
 <div class=card><h3>Download Backup</h3>""")
+
+
+# ---- v14: TAHIR API SYSTEM replaces the old Main API (token only)
+for _k in list(T):
+    if _k in ("admin_mapi.html", "admin_mapi_products.html"):
+        continue
+    T[_k] = T[_k].replace("Main API", "Tahir API System")
+T["admin_mapi.html"] = """{% extends 'abase.html' %}{% block c %}{% set page2='c' %}<h2>{{ic('code',24)}} Tahir API System</h2><div style="display:flex;gap:8px;flex-wrap:wrap;margin:6px 0 4px">
+<a class=btn href="/admin/main-api" style="{{'' if page2=='c' else 'background:transparent;border:1px solid var(--bd);box-shadow:none'}}">{{ic('key',16)}}Connection</a>
+<a class=btn href="/admin/main-api/products" style="{{'' if page2=='p' else 'background:transparent;border:1px solid var(--bd);box-shadow:none'}}">{{ic('box',16)}}All Products</a></div>
+<div class=card><h3>{{ic('key',20)}} Connect</h3>
+<p class=mu>Just paste your API token and press <b>Connect</b>. Nothing else is needed.</p>
+<form method=post><input type=hidden name=action value=save>
+<p class=mu>API Token{% if tail %} &mdash; saved (ends with <code>{{tail}}</code>). Leave empty to keep it.{% endif %}</p>
+<input name=token type=password autocomplete=off placeholder="Paste your API token" style="width:100%" {{'' if tail else 'required'}}>
+<button class=g style="margin-top:12px">{{ic('check')}} Connect</button></form></div>
+<div class=card><h3>{{ic('wallet',20)}} Status &amp; Balance</h3>
+{% if st %}{% if st.ok %}<span class="pill a">Connect successful</span>
+<div style="font-size:30px;font-weight:800;color:#34d399;margin:8px 0 2px">{{st.balance|cur}}</div>
+<div class=mu>USD {{'%g'|format(st.balance_usd or 0)}}</div>
+{% else %}<span class="pill e">Not connected</span><div class=mu style="margin:8px 0">{{st.msg}}</div>{% endif %}
+<div class=mu style="margin-top:6px">Last checked: {{st.ts|dt}}</div>
+{% else %}<div class=mu>Not checked yet. Paste your token and press Connect.</div>{% endif %}
+<form method=post style="margin-top:12px"><input type=hidden name=action value=check><button>{{ic('wallet')}} Check Balance</button></form></div>
+{% if st and st.ok %}<a class=btn href="/admin/main-api/products">{{ic('box',16)}} Open All Products &rarr;</a>{% endif %}
+{% endblock %}"""
+T["admin_mapi_products.html"] = T["admin_mapi_products.html"].replace("Buying is done live from the main API.", "Buying is done live from the Tahir API. Cost = USD price x 30.").replace("Import ALL products from the main API?", "Import ALL products from the Tahir API?")

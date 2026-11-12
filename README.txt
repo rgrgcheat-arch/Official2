@@ -150,7 +150,7 @@ LOGO: Admin > Logo & Theme: add / replace / remove the picture shown in the menu
 LIGHT / DARK: sun/moon button at the top of every page (saved per browser). Admin sets the default look.
 
 ---- v12 (part 1: name + admin security + users section) ----
-NAME: OFFICIAL SELLER everywhere (panel, bot messages, bot_main). Admin login: NOVIX / 909090.
+NAME: OFFICIAL SELLER everywhere (panel, bot messages, bot_main). Admin login: ROHIT / 909090.
 ADMIN SECURITY: the admin password alone no longer opens the panel.
   First login (no bot token saved yet): username + password -> "Connect your bot" page -> paste the bot API token (checked with Telegram)
   + admin Chat ID (default is already filled) -> a 6-digit code is sent to that chat -> enter it -> panel.
